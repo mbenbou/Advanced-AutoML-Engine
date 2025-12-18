@@ -19,12 +19,20 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer, KNNImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, OrdinalEncoder, RobustScaler, LabelEncoder
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, AdaBoostClassifier, AdaBoostRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.ensemble import (
+    RandomForestClassifier, RandomForestRegressor, 
+    AdaBoostClassifier, AdaBoostRegressor,
+    ExtraTreesClassifier, ExtraTreesRegressor
+)
+from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score, r2_score, mean_squared_error, 
     mean_absolute_error, confusion_matrix
 )
 from xgboost import XGBClassifier, XGBRegressor
+
 
 try:
     from imblearn.over_sampling import SMOTE
@@ -69,6 +77,7 @@ class TaskDetector:
             'imbalance_ratio': None
         }
 
+
         if unique_vals > 50 and (unique_vals / total_rows > 0.90):
              st.error(f"⚠️ **CRITICAL WARNING**: Target column '{self.target_col}' has {unique_vals} unique values (almost unique per row).")
              st.warning("It looks like an **ID** or **Date**. Classification models will fail (Accuracy ≈ 0%) because the classes in the Test set won't exist in the Training set. Please select a Category or Numerical column.")
@@ -94,7 +103,8 @@ class TaskDetector:
             info['subtype'] = 'Continuous'
         
         return info
-#preprocessing and pipeline
+
+#preprocessing and model building engine
 
 class PipelineBuilder:
     def __init__(self, task_info):
@@ -105,6 +115,7 @@ class PipelineBuilder:
         numeric_features = X.select_dtypes(include=['int64', 'float64']).columns
         categorical_features = X.select_dtypes(include=['object', 'category', 'bool']).columns
         
+        # --- Advanced Imputation & Robust Scaling ---
         num_transformer = Pipeline(steps=[
             ('imputer', KNNImputer(n_neighbors=5)), 
             ('scaler', RobustScaler())
@@ -123,15 +134,14 @@ class PipelineBuilder:
             verbose_feature_names_out=False
         )
         
-        # FIX: Force pandas output to keep feature names and silence LightGBM warnings
         preprocessor.set_output(transform="pandas")
-        
         return preprocessor
 
     def get_models(self):
         """Returns a dictionary of models + hyperparameter grids based on task."""
         models = {}
-        #classification models
+        
+
         if self.task_info['type'] == 'Classification':
             
             # 1. Logistic Regression
@@ -144,30 +154,50 @@ class PipelineBuilder:
                 'model': RandomForestClassifier(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
             }
-            # 3. XGBoost
+            # 3. Extra Trees 
+            models['Extra Trees'] = {
+                'model': ExtraTreesClassifier(random_state=42),
+                'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
+            }
+            # 4. SVM 
+            models['SVM'] = {
+                'model': SVC(probability=True, random_state=42),
+                'params': {'model__C': [0.1, 1, 10], 'model__kernel': ['linear', 'rbf']}
+            }
+            # 5. KNN 
+            models['KNN'] = {
+                'model': KNeighborsClassifier(),
+                'params': {'model__n_neighbors': [3, 5, 7], 'model__weights': ['uniform', 'distance']}
+            }
+            # 6. XGBoost
             models['XGBoost'] = {
                 'model': XGBClassifier(eval_metric='logloss', random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
-            # 4. AdaBoost
+            # 7. AdaBoost
             models['AdaBoost'] = {
-                'model': AdaBoostClassifier(algorithm='SAMME', random_state=42), # SAMME fixed for newer sklearn
-                'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1, 1.0]}
+                'model': AdaBoostClassifier(algorithm='SAMME', random_state=42),
+                'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
-            # 5. LightGBM (if installed)
+            # 8. Gaussian Naive Bayes 
+            models['Naive Bayes'] = {
+                'model': GaussianNB(),
+                'params': {} # No hyperparameters to tune usually
+            }
+            
+            # Optional Libraries
             if LGBM_INSTALLED:
                 models['LightGBM'] = {
                     'model': LGBMClassifier(random_state=42, verbose=-1),
                     'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
                 }
-            # 6. CatBoost (if installed)
             if CATBOOST_INSTALLED:
                 models['CatBoost'] = {
                     'model': CatBoostClassifier(random_state=42, verbose=0),
                     'params': {'model__iterations': [50, 100], 'model__learning_rate': [0.01, 0.1], 'model__depth': [4, 6]}
                 }
 
-        # regression models
+
         else:
             # 1. Ridge Regression
             models['Ridge Regression'] = {
@@ -179,23 +209,37 @@ class PipelineBuilder:
                 'model': RandomForestRegressor(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
             }
-            # 3. XGBoost
+             # 3. Extra Trees
+            models['Extra Trees'] = {
+                'model': ExtraTreesRegressor(random_state=42),
+                'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
+            }
+            # 4. SVM
+            models['SVR'] = {
+                'model': SVR(),
+                'params': {'model__C': [0.1, 1, 10], 'model__kernel': ['linear', 'rbf']}
+            }
+            # 5. KNN
+            models['KNN'] = {
+                'model': KNeighborsRegressor(),
+                'params': {'model__n_neighbors': [3, 5, 7], 'model__weights': ['uniform', 'distance']}
+            }
+            # 6. XGBoost
             models['XGBoost'] = {
                 'model': XGBRegressor(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
-            # 4. AdaBoost
+            # 7. AdaBoost
             models['AdaBoost'] = {
                 'model': AdaBoostRegressor(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
-            # 5. LightGBM (if installed)
+            
             if LGBM_INSTALLED:
                 models['LightGBM'] = {
                     'model': LGBMRegressor(random_state=42, verbose=-1),
                     'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
                 }
-            # 6. CatBoost (if installed)
             if CATBOOST_INSTALLED:
                 models['CatBoost'] = {
                     'model': CatBoostRegressor(random_state=42, verbose=0),
@@ -204,7 +248,7 @@ class PipelineBuilder:
             
         return models
 
-#training and evaluation
+#training and evaluation engine
 
 class AutoMLEngine:
     def __init__(self, data, target_col):
@@ -224,10 +268,10 @@ class AutoMLEngine:
         
         stratify_strategy = None
         
-#logic
+        # --- CLASSIFICATION LOGIC ---
         if self.task_info['type'] == 'Classification':
             
-            # FIX: Explicit Label Encoding for Target (Required for XGBoost/LightGBM/CatBoost)
+            # FIX: Explicit Label Encoding for Target
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
             y = pd.Series(np.array(y_encoded), name=self.target_col)
@@ -245,10 +289,10 @@ class AutoMLEngine:
             try:
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=stratify_strategy)
             except ValueError:
-                # Fallback to random split
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=None)
                 stratify_strategy = None
-
+        
+        # --- REGRESSION LOGIC ---
         else:
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -263,11 +307,10 @@ class AutoMLEngine:
 
         for name, config in model_candidates.items():
             
-            # --- SAFE PIPELINE CONSTRUCTION ---
             steps = []
             steps.append(('preprocessor', preprocessor))
 
-            # SMOTE CHECK: Only apply if installed AND we have enough samples (>5)
+            # SMOTE CHECK
             min_samples = y_train.value_counts().min()
             use_smote = (self.task_info['is_imbalanced'] and 
                          IMBLEARN_INSTALLED and 
@@ -295,7 +338,7 @@ class AutoMLEngine:
             else:
                 scoring = 'r2'
             
-#training loop
+            # --- ROBUST TRAINING LOOP ---
             try:
                 grid = GridSearchCV(full_pipeline, config['params'], cv=cv, scoring=scoring, n_jobs=-1)
                 grid.fit(X_train, y_train)
@@ -326,7 +369,7 @@ class AutoMLEngine:
                     'y_pred': y_pred
                 }
             except Exception as e:
-                st.toast(f"⚠️ Model {name} failed: {str(e)}", icon="⚠️")
+                # st.toast(f"⚠️ Model {name} failed: {str(e)}", icon="⚠️")
                 continue
             
             idx += 1
@@ -363,7 +406,7 @@ def main():
     st.title("🚀 Advanced AutoML Engine")
     st.markdown("""
     **Features:** Automated Task Detection, Robust Preprocessing, 
-    **AdaBoost**, **LightGBM**, **CatBoost**, and Smart Model Selection.
+    **SVM**, **KNN**, **Extra Trees**, **Boosting**, and Smart Model Selection.
     """)
     
     # Display installed optional libraries
@@ -460,6 +503,8 @@ def main():
                     plt.xlabel("Actual")
                     plt.ylabel("Predicted")
                     st.pyplot(fig)
+                    
+            
 
     else:
         st.info("Awaiting file upload...")

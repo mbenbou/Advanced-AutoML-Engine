@@ -6,6 +6,12 @@ import seaborn as sns
 import io
 import joblib
 import base64
+import warnings
+
+
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+warnings.filterwarnings("ignore", category=UserWarning, module="lightgbm")
+
 
 from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, KFold
 from sklearn.pipeline import Pipeline
@@ -13,23 +19,34 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer, KNNImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, OrdinalEncoder, RobustScaler, LabelEncoder
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, AdaBoostClassifier, AdaBoostRegressor
 from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score, r2_score, mean_squared_error, 
     mean_absolute_error, confusion_matrix
 )
 from xgboost import XGBClassifier, XGBRegressor
 
-
 try:
     from imblearn.over_sampling import SMOTE
     from imblearn.pipeline import Pipeline as ImbPipeline
     IMBLEARN_INSTALLED = True
 except ImportError:
-    st.warning("imbalanced-learn is not installed. SMOTE will be disabled. Run: pip install imbalanced-learn")
     IMBLEARN_INSTALLED = False
 
-# task detection and data handling
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+    LGBM_INSTALLED = True
+except ImportError:
+    LGBM_INSTALLED = False
+
+try:
+    from catboost import CatBoostClassifier, CatBoostRegressor
+    CATBOOST_INSTALLED = True
+except ImportError:
+    CATBOOST_INSTALLED = False
+
+
+#task detection and data handling
 
 class TaskDetector:
     def __init__(self, data, target_col):
@@ -56,22 +73,19 @@ class TaskDetector:
              st.error(f"⚠️ **CRITICAL WARNING**: Target column '{self.target_col}' has {unique_vals} unique values (almost unique per row).")
              st.warning("It looks like an **ID** or **Date**. Classification models will fail (Accuracy ≈ 0%) because the classes in the Test set won't exist in the Training set. Please select a Category or Numerical column.")
 
-
+        # --- Rule 1: Classification vs Regression ---
         if (unique_vals <= 20) or (dtype == 'object') or (dtype == 'bool'):
             info['type'] = 'Classification'
             
-            # Subtype: Binary vs Multiclass
             if unique_vals == 2:
                 info['subtype'] = 'Binary'
             else:
                 info['subtype'] = 'Multiclass'
             
-            # Imbalance Detection
             value_counts = self.target_data.value_counts(normalize=True)
             min_class_ratio = value_counts.min()
             info['imbalance_ratio'] = min_class_ratio
             
-            # If smallest class is less than 20%
             if min_class_ratio < 0.20: 
                 info['is_imbalanced'] = True
         
@@ -80,7 +94,7 @@ class TaskDetector:
             info['subtype'] = 'Continuous'
         
         return info
-# pipeline abd preprocessing
+#preprocessing and pipeline
 
 class PipelineBuilder:
     def __init__(self, task_info):
@@ -91,7 +105,6 @@ class PipelineBuilder:
         numeric_features = X.select_dtypes(include=['int64', 'float64']).columns
         categorical_features = X.select_dtypes(include=['object', 'category', 'bool']).columns
         
-        # --- Advanced Imputation & Robust Scaling ---
         num_transformer = Pipeline(steps=[
             ('imputer', KNNImputer(n_neighbors=5)), 
             ('scaler', RobustScaler())
@@ -106,42 +119,91 @@ class PipelineBuilder:
             transformers=[
                 ('num', num_transformer, numeric_features),
                 ('cat', cat_transformer, categorical_features)
-            ]
+            ],
+            verbose_feature_names_out=False
         )
+        
+        # FIX: Force pandas output to keep feature names and silence LightGBM warnings
+        preprocessor.set_output(transform="pandas")
+        
         return preprocessor
 
     def get_models(self):
         """Returns a dictionary of models + hyperparameter grids based on task."""
         models = {}
-        
+        #classification models
         if self.task_info['type'] == 'Classification':
+            
+            # 1. Logistic Regression
             models['Logistic Regression'] = {
                 'model': LogisticRegression(max_iter=1000, solver='liblinear'),
                 'params': {'model__C': [0.1, 1, 10]}
             }
+            # 2. Random Forest
             models['Random Forest'] = {
                 'model': RandomForestClassifier(random_state=42),
-                'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10, 20]}
+                'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
             }
+            # 3. XGBoost
             models['XGBoost'] = {
                 'model': XGBClassifier(eval_metric='logloss', random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
+            # 4. AdaBoost
+            models['AdaBoost'] = {
+                'model': AdaBoostClassifier(algorithm='SAMME', random_state=42), # SAMME fixed for newer sklearn
+                'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1, 1.0]}
+            }
+            # 5. LightGBM (if installed)
+            if LGBM_INSTALLED:
+                models['LightGBM'] = {
+                    'model': LGBMClassifier(random_state=42, verbose=-1),
+                    'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
+                }
+            # 6. CatBoost (if installed)
+            if CATBOOST_INSTALLED:
+                models['CatBoost'] = {
+                    'model': CatBoostClassifier(random_state=42, verbose=0),
+                    'params': {'model__iterations': [50, 100], 'model__learning_rate': [0.01, 0.1], 'model__depth': [4, 6]}
+                }
+
+        # regression models
         else:
+            # 1. Ridge Regression
             models['Ridge Regression'] = {
                 'model': Ridge(),
                 'params': {'model__alpha': [0.1, 1.0, 10.0]}
             }
+            # 2. Random Forest
             models['Random Forest'] = {
                 'model': RandomForestRegressor(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__max_depth': [None, 10]}
             }
+            # 3. XGBoost
             models['XGBoost'] = {
                 'model': XGBRegressor(random_state=42),
                 'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
             }
+            # 4. AdaBoost
+            models['AdaBoost'] = {
+                'model': AdaBoostRegressor(random_state=42),
+                'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
+            }
+            # 5. LightGBM (if installed)
+            if LGBM_INSTALLED:
+                models['LightGBM'] = {
+                    'model': LGBMRegressor(random_state=42, verbose=-1),
+                    'params': {'model__n_estimators': [50, 100], 'model__learning_rate': [0.01, 0.1]}
+                }
+            # 6. CatBoost (if installed)
+            if CATBOOST_INSTALLED:
+                models['CatBoost'] = {
+                    'model': CatBoostRegressor(random_state=42, verbose=0),
+                    'params': {'model__iterations': [50, 100], 'model__learning_rate': [0.01, 0.1], 'model__depth': [4, 6]}
+                }
             
         return models
+
 #training and evaluation
 
 class AutoMLEngine:
@@ -162,14 +224,15 @@ class AutoMLEngine:
         
         stratify_strategy = None
         
+#logic
         if self.task_info['type'] == 'Classification':
             
-
+            # FIX: Explicit Label Encoding for Target (Required for XGBoost/LightGBM/CatBoost)
             le = LabelEncoder()
             y_encoded = le.fit_transform(y)
             y = pd.Series(np.array(y_encoded), name=self.target_col)
             
-            # satisfaction check (imbalances)
+            # --- ROBUST STRATIFICATION CHECK ---
             min_class_samples = y.value_counts().min()
             
             if min_class_samples >= 2:
@@ -185,7 +248,6 @@ class AutoMLEngine:
                 # Fallback to random split
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=None)
                 stratify_strategy = None
-        
 
         else:
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -201,11 +263,11 @@ class AutoMLEngine:
 
         for name, config in model_candidates.items():
             
-
+            # --- SAFE PIPELINE CONSTRUCTION ---
             steps = []
             steps.append(('preprocessor', preprocessor))
 
-            # SMOTE CHECK:
+            # SMOTE CHECK: Only apply if installed AND we have enough samples (>5)
             min_samples = y_train.value_counts().min()
             use_smote = (self.task_info['is_imbalanced'] and 
                          IMBLEARN_INSTALLED and 
@@ -222,7 +284,6 @@ class AutoMLEngine:
             full_pipeline = pipeline_cls(steps)
 
             # Grid Search Setup
-            # Only use StratifiedKFold if we successfully stratified earlier
             if self.task_info['type'] == 'Classification' and stratify_strategy is not None:
                 cv = StratifiedKFold(n_splits=3) 
             else:
@@ -233,6 +294,8 @@ class AutoMLEngine:
                 scoring = 'f1_macro' if self.task_info['is_imbalanced'] else 'accuracy'
             else:
                 scoring = 'r2'
+            
+#training loop
             try:
                 grid = GridSearchCV(full_pipeline, config['params'], cv=cv, scoring=scoring, n_jobs=-1)
                 grid.fit(X_train, y_train)
@@ -263,8 +326,7 @@ class AutoMLEngine:
                     'y_pred': y_pred
                 }
             except Exception as e:
-                # Log the error to UI but continue
-                st.toast(f"⚠️ Model {name} failed: Data too sparse or incompatible. Skipping.", icon="⚠️")
+                st.toast(f"⚠️ Model {name} failed: {str(e)}", icon="⚠️")
                 continue
             
             idx += 1
@@ -286,6 +348,7 @@ class AutoMLEngine:
         
         return self.results, self.best_model_name
 
+#application interface
 
 @st.cache_data
 def load_data(file):
@@ -299,10 +362,16 @@ def main():
     
     st.title("🚀 Advanced AutoML Engine")
     st.markdown("""
-    **Features:** Automated Task Detection, Robust Preprocessing (KNN Imputation + Robust Scaling), 
-    and Smart Model Selection.
+    **Features:** Automated Task Detection, Robust Preprocessing, 
+    **AdaBoost**, **LightGBM**, **CatBoost**, and Smart Model Selection.
     """)
     
+    # Display installed optional libraries
+    st.sidebar.markdown("### 🛠️ Library Status")
+    st.sidebar.caption(f"LightGBM: {'✅' if LGBM_INSTALLED else '❌'}")
+    st.sidebar.caption(f"CatBoost: {'✅' if CATBOOST_INSTALLED else '❌'}")
+    st.sidebar.caption(f"Imbalanced-Learn: {'✅' if IMBLEARN_INSTALLED else '❌'}")
+
     # --- Sidebar: Configuration ---
     st.sidebar.header("1. Upload Data")
     uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
@@ -323,11 +392,12 @@ def main():
                 result_tuple = engine.run()
                 
                 if result_tuple[0] is None:
-                    st.stop() # Stop execution if all models failed
+                    st.stop()
                     
                 results, best_model_name = result_tuple
                 task_info = engine.task_info
             
+            # --- RESULTS DISPLAY ---
             st.divider()
             
             # 1. Task Detection Report
@@ -368,9 +438,8 @@ def main():
                 st.markdown(href, unsafe_allow_html=True)
 
             with col2:
-                # visual
+                # --- VISUALIZATION ---
                 if task_info['type'] == 'Classification':
-                    # Standard Confusion Matrix
                     st.markdown("### Confusion Matrix")
                     fig, ax = plt.subplots()
                     cm = confusion_matrix(best_res['y_test'], best_res['y_pred'])
@@ -380,7 +449,6 @@ def main():
                     st.pyplot(fig)
                     
                 else:
-                    # Regression Plot
                     st.markdown("### Actual vs Predicted")
                     fig, ax = plt.subplots()
                     sns.scatterplot(x=best_res['y_test'], y=best_res['y_pred'], alpha=0.6)
@@ -392,7 +460,6 @@ def main():
                     plt.xlabel("Actual")
                     plt.ylabel("Predicted")
                     st.pyplot(fig)
-                    
 
     else:
         st.info("Awaiting file upload...")

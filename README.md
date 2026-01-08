@@ -36,7 +36,7 @@ A robust, no-code Automated Machine Learning (AutoML) tool built with **Python**
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/your-username/automl-engine.git](https://github.com/your-username/automl-engine.git)
+    git clone [https://github.com/mbenbou/automl-engine.git](https://github.com/mbenbou/automl-engine.git)
     cd automl-engine
     ```
 

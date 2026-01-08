@@ -97,7 +97,8 @@ The engine uses a modular Object-Oriented design:
 1.  **`TaskDetector`**: Analyzes metadata (cardinality, dtype) to route the problem to the correct logic.
 2.  **`PipelineBuilder`**: Dynamically assembles Scikit-Learn pipelines. It forces Pandas output format to ensure feature names are preserved for advanced models like LightGBM.
 3.  **`AutoMLEngine`**: Manages the training loop. It handles Stratified vs Random splitting based on class balance and catches errors on individual models to ensure the application never crashes completely.
-
+<img width="1910" height="922" alt="image" src="https://github.com/user-attachments/assets/eb78353e-62e0-4878-b1bf-4a178ff3be90" />
+<img width="1871" height="923" alt="image" src="https://github.com/user-attachments/assets/5e8a7a4b-e8ad-4fb1-8e1f-89cf971516bd" />
 ---
 
 ## 📄 License
